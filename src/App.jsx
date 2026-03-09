@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import {
   toCents,
   formatMoney,
@@ -139,24 +139,20 @@ function TargetState({ accounts, targets, setTargets }) {
 
   const destinationAccounts = accounts.filter(a => a.status !== 'close');
 
-  // Sync targets when accounts change
-  const syncedTargets = useMemo(() => {
-    const result = [];
-    for (const acct of destinationAccounts) {
-      const existing = targets.find(t => t.name === acct.name);
-      result.push(existing || makeTarget(acct.name));
-    }
-    return result;
+  // Sync targets when destination accounts change
+  const destKey = destinationAccounts.map(a => a.name).join(',');
+  useEffect(() => {
+    setTargets(prev => {
+      const result = [];
+      for (const acct of destinationAccounts) {
+        const existing = prev.find(t => t.name === acct.name);
+        result.push(existing || makeTarget(acct.name));
+      }
+      if (JSON.stringify(result) === JSON.stringify(prev)) return prev;
+      return result;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destinationAccounts.map(a => a.name).join(',')]);
-
-  // Update parent if synced list changed
-  useMemo(() => {
-    if (JSON.stringify(syncedTargets) !== JSON.stringify(targets)) {
-      setTargets(syncedTargets);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [syncedTargets]);
+  }, [destKey]);
 
   const accountsForEngine = accounts.map(a => ({
     name: a.name,
