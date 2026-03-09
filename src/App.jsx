@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, Component } from 'react';
 import {
   toCents,
   formatMoney,
@@ -6,14 +6,40 @@ import {
   validateTargets,
 } from './engine';
 
+// ─── Error Boundary ────────────────────────────────────────
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="max-w-4xl mx-auto px-4 py-8">
+          <div className="bg-red-50 border border-red-200 rounded p-6">
+            <h2 className="text-red-800 font-bold text-lg mb-2">Something went wrong</h2>
+            <pre className="text-red-600 text-sm whitespace-pre-wrap">{this.state.error.message}</pre>
+            <button
+              onClick={() => this.setState({ error: null })}
+              className="mt-4 bg-red-600 text-white px-4 py-2 rounded text-sm"
+            >
+              Try Again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 // ─── Helpers ───────────────────────────────────────────────
 let nextId = 1;
 function makeAccount(name = '', balance = '', status = 'keep') {
   return { id: nextId++, name, balance, status };
-}
-
-function makeTarget(name, targetType = 'percentage', targetValue = '') {
-  return { name, targetType, targetValue };
 }
 
 function parseDollarInput(val) {
@@ -131,37 +157,7 @@ function CurrentState({ accounts, setAccounts }) {
 }
 
 // ─── Step 2: Target State ──────────────────────────────────
-function TargetState({ accounts, targets, setTargets }) {
-  const totalPoolCents = accounts.reduce(
-    (s, a) => s + (a.status === 'new' ? 0 : toCents(parseDollarInput(a.balance))),
-    0
-  );
-
-  const destinationAccounts = accounts.filter(a => a.status !== 'close');
-
-  // Sync targets when destination accounts change
-  const destKey = destinationAccounts.map(a => a.name).join(',');
-  useEffect(() => {
-    setTargets(prev => {
-      const result = [];
-      for (const acct of destinationAccounts) {
-        const existing = prev.find(t => t.name === acct.name);
-        result.push(existing || makeTarget(acct.name));
-      }
-      if (JSON.stringify(result) === JSON.stringify(prev)) return prev;
-      return result;
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [destKey]);
-
-  const accountsForEngine = accounts.map(a => ({
-    name: a.name,
-    balanceCents: a.status === 'new' ? 0 : toCents(parseDollarInput(a.balance)),
-    status: a.status,
-  }));
-
-  const validation = validateTargets(accountsForEngine, targets);
-
+function TargetState({ targets, setTargets, totalPoolCents, validation }) {
   const updateTarget = (name, field, value) => {
     setTargets(prev =>
       prev.map(t => (t.name === name ? { ...t, [field]: value } : t))
@@ -170,11 +166,11 @@ function TargetState({ accounts, targets, setTargets }) {
 
   const distributeEvenly = () => {
     const unset = targets.filter(
-      t => t.targetType === 'percentage' && (!t.targetValue || t.targetValue === 0)
+      t => t.targetType === 'percentage' && (!t.targetValue || Number(t.targetValue) === 0)
     );
     const setPercent = targets
-      .filter(t => t.targetType === 'percentage' && t.targetValue > 0)
-      .reduce((s, t) => s + parseFloat(t.targetValue), 0);
+      .filter(t => t.targetType === 'percentage' && Number(t.targetValue) > 0)
+      .reduce((s, t) => s + Number(t.targetValue), 0);
 
     const availablePercent = 100 - setPercent;
 
@@ -182,7 +178,7 @@ function TargetState({ accounts, targets, setTargets }) {
       const each = Math.round((availablePercent / unset.length) * 100) / 100;
       setTargets(prev =>
         prev.map(t => {
-          if (t.targetType === 'percentage' && (!t.targetValue || t.targetValue === 0)) {
+          if (t.targetType === 'percentage' && (!t.targetValue || Number(t.targetValue) === 0)) {
             return { ...t, targetValue: each };
           }
           return t;
@@ -198,66 +194,70 @@ function TargetState({ accounts, targets, setTargets }) {
         Set the desired allocation for each account that will remain after transfers.
       </p>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b text-left">
-              <th className="pb-2 pr-2">Account Name</th>
-              <th className="pb-2 pr-2">Target Type</th>
-              <th className="pb-2 pr-2">Target Value</th>
-              <th className="pb-2 pr-2">Target $</th>
-            </tr>
-          </thead>
-          <tbody>
-            {targets.map(t => {
-              const targetCents = validation.targetMap?.get(t.name) || 0;
-              const impliedPct =
-                totalPoolCents > 0 ? ((targetCents / totalPoolCents) * 100).toFixed(2) : '0.00';
-              return (
-                <tr key={t.name} className="border-b last:border-b-0">
-                  <td className="py-2 pr-2 font-medium">{t.name}</td>
-                  <td className="py-2 pr-2">
-                    <select
-                      className="border rounded px-2 py-1"
-                      value={t.targetType}
-                      onChange={e => updateTarget(t.name, 'targetType', e.target.value)}
-                      aria-label="Target type"
-                    >
-                      <option value="percentage">Percentage</option>
-                      <option value="dollar">Dollar Amount</option>
-                    </select>
-                  </td>
-                  <td className="py-2 pr-2">
-                    <div className="flex items-center gap-1">
-                      {t.targetType === 'dollar' && <span className="text-gray-400">$</span>}
-                      <input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        className="w-32 border rounded px-2 py-1 text-right"
-                        value={t.targetValue}
-                        onChange={e =>
-                          updateTarget(t.name, 'targetValue', parseFloat(e.target.value) || '')
-                        }
-                        aria-label="Target value"
-                      />
-                      {t.targetType === 'percentage' && <span className="text-gray-400">%</span>}
-                    </div>
-                  </td>
-                  <td className="py-2 pr-2 text-right text-gray-500">
-                    {formatMoney(targetCents)}
-                    {t.targetType === 'dollar' && (
-                      <span className="text-xs ml-1">({impliedPct}%)</span>
-                    )}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      {targets.length === 0 ? (
+        <p className="text-gray-400 italic text-sm">No destination accounts yet. Add accounts in Step 1.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b text-left">
+                <th className="pb-2 pr-2">Account Name</th>
+                <th className="pb-2 pr-2">Target Type</th>
+                <th className="pb-2 pr-2">Target Value</th>
+                <th className="pb-2 pr-2">Target $</th>
+              </tr>
+            </thead>
+            <tbody>
+              {targets.map(t => {
+                const targetCents = validation.targetMap ? (validation.targetMap.get(t.name) || 0) : 0;
+                const impliedPct =
+                  totalPoolCents > 0 ? ((targetCents / totalPoolCents) * 100).toFixed(2) : '0.00';
+                return (
+                  <tr key={t.name} className="border-b last:border-b-0">
+                    <td className="py-2 pr-2 font-medium">{t.name}</td>
+                    <td className="py-2 pr-2">
+                      <select
+                        className="border rounded px-2 py-1"
+                        value={t.targetType}
+                        onChange={e => updateTarget(t.name, 'targetType', e.target.value)}
+                        aria-label="Target type"
+                      >
+                        <option value="percentage">Percentage</option>
+                        <option value="dollar">Dollar Amount</option>
+                      </select>
+                    </td>
+                    <td className="py-2 pr-2">
+                      <div className="flex items-center gap-1">
+                        {t.targetType === 'dollar' && <span className="text-gray-400">$</span>}
+                        <input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          className="w-32 border rounded px-2 py-1 text-right"
+                          value={t.targetValue}
+                          onChange={e =>
+                            updateTarget(t.name, 'targetValue', parseFloat(e.target.value) || 0)
+                          }
+                          aria-label="Target value"
+                        />
+                        {t.targetType === 'percentage' && <span className="text-gray-400">%</span>}
+                      </div>
+                    </td>
+                    <td className="py-2 pr-2 text-right text-gray-500">
+                      {formatMoney(targetCents)}
+                      {t.targetType === 'dollar' && (
+                        <span className="text-xs ml-1">({impliedPct}%)</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
 
-      {validation.warnings?.map((w, i) => (
+      {validation.warnings && validation.warnings.map((w, i) => (
         <div key={i} className="mt-2 text-amber-600 text-sm bg-amber-50 rounded px-3 py-2">
           {w}
         </div>
@@ -269,7 +269,7 @@ function TargetState({ accounts, targets, setTargets }) {
         </div>
       )}
 
-      {validation.valid && (
+      {validation.valid && targets.length > 0 && (
         <div className="mt-3 text-green-600 text-sm bg-green-50 rounded px-3 py-2">
           Targets are valid. Total: {formatMoney(validation.totalTargetCents)}
         </div>
@@ -580,19 +580,42 @@ function TransferPlan({ plan }) {
 }
 
 // ─── Main App ──────────────────────────────────────────────
-export default function App() {
+function AppInner() {
   const [accounts, setAccounts] = useState([
     makeAccount('Fund A', '15234.67', 'keep'),
     makeAccount('Fund B', '12891.03', 'keep'),
   ]);
 
-  const [targets, setTargets] = useState([]);
+  const [targets, setTargets] = useState([
+    { name: 'Fund A', targetType: 'percentage', targetValue: 50 },
+    { name: 'Fund B', targetType: 'percentage', targetValue: 50 },
+  ]);
 
   const [constraints, setConstraints] = useState({
     maxTransfers: null,
     toleranceType: 'exact',
     toleranceValue: 0,
   });
+
+  // Sync target list when destination accounts change (moved from child component)
+  const destinationNames = accounts
+    .filter(a => a.status !== 'close')
+    .map(a => a.name);
+  const destKey = destinationNames.join('\n');
+
+  useEffect(() => {
+    setTargets(prev => {
+      const result = destinationNames.map(name => {
+        const existing = prev.find(t => t.name === name);
+        return existing || { name, targetType: 'percentage', targetValue: 0 };
+      });
+      // Only update if the list actually changed
+      if (result.length === prev.length && result.every((r, i) => r.name === prev[i].name)) {
+        return prev;
+      }
+      return result;
+    });
+  }, [destKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Derived data
   const accountsForEngine = useMemo(
@@ -603,6 +626,11 @@ export default function App() {
         status: a.status,
       })),
     [accounts]
+  );
+
+  const totalPoolCents = useMemo(
+    () => accountsForEngine.reduce((s, a) => s + a.balanceCents, 0),
+    [accountsForEngine]
   );
 
   const validation = useMemo(
@@ -643,7 +671,12 @@ export default function App() {
 
       <div className="space-y-6 no-print">
         <CurrentState accounts={accounts} setAccounts={setAccounts} />
-        <TargetState accounts={accounts} targets={targets} setTargets={setTargets} />
+        <TargetState
+          targets={targets}
+          setTargets={setTargets}
+          totalPoolCents={totalPoolCents}
+          validation={validation}
+        />
         <Constraints
           constraints={constraints}
           setConstraints={setConstraints}
@@ -659,5 +692,13 @@ export default function App() {
         All computation runs in your browser. No data is transmitted anywhere.
       </footer>
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppInner />
+    </ErrorBoundary>
   );
 }
